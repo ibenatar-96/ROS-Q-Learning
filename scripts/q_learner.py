@@ -20,6 +20,8 @@ MAX_PICK = 6
 nav_count = 0
 pick_count = 0
 
+last_total_rewards = 0
+
 Q = {}
 TERMINATE_STATE = [(0,4,4,4,4),(1,4,4,4,4),(2,4,4,4,4),(3,4,4,4,4),(4,4,4,4,4)]
 
@@ -32,29 +34,29 @@ def handle_csv(q_learn):
         Q = load_q_table()
 
 def save_q_table(q_table):
-    actions = {'navigate_to_loc_0': navigate_to_loc_0, 
-        'navigate_to_loc_1': navigate_to_loc_1, 
-        'navigate_to_loc_2': navigate_to_loc_2, 
-        'navigate_to_loc_3': navigate_to_loc_3, 
-        'navigate_to_loc_4': navigate_to_loc_4, 
-        'pick_toy': pick_toy, 
-        'place_toy': place_toy}
+    actions = {navigate_to_loc_0:'navigate_to_loc_0', 
+        navigate_to_loc_1:'navigate_to_loc_1', 
+        navigate_to_loc_2:'navigate_to_loc_2', 
+        navigate_to_loc_3:'navigate_to_loc_3', 
+        navigate_to_loc_4:'navigate_to_loc_4', 
+        pick_toy:'pick_toy', 
+        place_toy:'place_toy'}
 
-    states = set([state for (state, _) in q_table.keys()])
-    actions = set([action for (_, action) in q_table.keys()])
+    _states = set([state for (state, _) in q_table.keys()])
+    _actions = set([actions[action] for (_, action) in q_table.keys()])
 
     with open(CSV_FILE, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
 
         # Write header row with actions as column names
-        writer.writerow(['State'] + list(actions))
+        writer.writerow(['State'] + list(_actions))
 
         # Write each state as a row with corresponding Q-values for each action
-        for state in states:
-            row = [state]
+        for _state in _states:
+            row = [_state]
             for action in actions:
                 # Access Q-value from the dictionary, handle missing entries (e.g., 0)
-                q_value = q_table.get((state, action), 0)
+                q_value = q_table.get((_state, action), 0)
                 row.append(q_value)
             writer.writerow(row)
 
@@ -250,8 +252,11 @@ def parse_info(info_str):
             info_dict['state'] = state
 
         if line.startswith("total rewards:"):
-            tr_str = line[line.find(":")+1:]
-            info_dict['total_rewards'] = eval(tr_str)
+            global last_total_rewards
+            total_r = eval(line[line.find(":")+1:])
+            info_dict['total_rewards'] = total_r
+            info_dict['immediate_reward'] = total_r - last_total_rewards
+            last_total_rewards = total_r
 
     return info_dict
 
@@ -278,27 +283,50 @@ def terminate():
     subprocess.run('killall -9 rosmaster', shell=True)
     subprocess.run('killall -9 roscore', shell=True)
 
+def encode_state(state):
+    return (state['robot_location'],state['toys_location']['green'],state['toys_location']['blue'],state['toys_location']['black'],state['toys_location']['red'])
+
+def find_max_action(q_table, encoded_state):
+    matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
+    max_value = max(matching_items.values())
+    action = [key for key, value in matching_items.items() if value == max_value][0][1]
+    return action
+
+def find_rand_action(q_table, encoded_state):
+    matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
+    num_options = len(matching_items)
+    random_index = random.randrange(num_options)
+    action = list(matching_items.keys())[random_index][1]
+    return action
+
+def find_max_q(q_table, encoded_state):
+    matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
+    max_value = max(matching_items.values())
+    return max_value
+
 def run_episode():
     global Q, TERMINATE_STATE, nav_count, pick_count
     epsilon = 0.3
-    alpa = 0.01
+    alpha = 0.01
     gamma = 0.95
+    info = get_info()
     state = info['state']
-    encoded_state = (state['robot_location'],state['toys_location']['green'],state['toys_location']['blue'],state['toys_location']['black'],state['toys_location']['red'])
+    encoded_state = encode_state(state)
     while encoded_state not in TERMINATE_STATE and nav_count < MAX_NAV and pick_count < MAX_PICK:
         rnd_choice = bool(random.random() < epsilon)
-        info = get_info()
-        matching_items = {key: value for key, value in Q.items() if key[0] == encoded_state}
         if rnd_choice:
-            num_options = len(matching_items)
-            random_index = random.randrange(num_options)
-            action = list(matching_items.keys())[random_index][1]
+            action = find_rand_action(Q, encoded_state)
         else:
-            max_value = max(matching_items.values())
-            action = [key for key, value in matching_items.items() if value == max_value][0][1]
-        print(f"Random choice: {rnd_choice}, Action chosen: {action}")
+            action = find_max_action(Q, encoded_state)
         action()
-
+        next_state = get_info()
+        next_encoded_state = encode_state(next_state)
+        next_max_value = find_max_action(Q, next_encoded_state)
+        print(f"Random choice: {rnd_choice}, Action chosen: {action}")
+        Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(next_state['immediate_reward'] + gamma * next_max_value)
+        state = next_state
+        encoded_state = next_encoded_state
+        
 
 def main(q_learn):
     handle_csv(q_learn)
