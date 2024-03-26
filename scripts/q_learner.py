@@ -204,7 +204,7 @@ def pick_toy():
         toy_type = info['state']['locations_toy'].get(location, 'None')
         print(f"Pick up toy type {toy_type} at location {location}")
         global pick_count
-        while not resp and pick_count < MAX_PICK:
+        if pick_count < MAX_PICK:
             pick_srv = rospy.ServiceProxy('/pick', pick)
             resp = pick_srv(toy_type)
             resp = resp.success
