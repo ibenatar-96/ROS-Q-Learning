@@ -85,7 +85,10 @@ def create_q_table():
     actions = [navigate_to_loc_0, navigate_to_loc_1, navigate_to_loc_2, navigate_to_loc_3, navigate_to_loc_4, pick_toy, place_toy]
 
     permutations_list = []
-    for permutation in permutations(range(4)):
+    for permutation in [element for element in product([0,1,2,3,4,5], repeat=4)]:
+        unique_elements = set(permutation)
+        if len(permutation) != len(unique_elements) and 4 not in (set(permutation) ^ unique_elements):
+            continue
         for first_element in range(5):
             state = tuple([first_element]) + tuple(permutation)
             permutations_list.append(state)
@@ -277,6 +280,8 @@ def bring_down_env():
     time.sleep(2)
     subprocess.Popen('rosrun task4_env skills_server.py', shell=True)
     time.sleep(2)
+    global nav_count, pick_count
+    nav_count = pick_count = 0
 
 def terminate():
     subprocess.run('rosnode kill -a', shell=True)
@@ -288,6 +293,8 @@ def encode_state(state):
 
 def find_max_action(q_table, encoded_state):
     matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
+    if len(matching_items) == 0:
+        print(f"ERROR: matching_items in find_max_action is empty, encoded_state: {encoded_state}")
     max_value = max(matching_items.values())
     action = [key for key, value in matching_items.items() if value == max_value][0][1]
     return action
@@ -295,12 +302,16 @@ def find_max_action(q_table, encoded_state):
 def find_rand_action(q_table, encoded_state):
     matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
     num_options = len(matching_items)
+    if len(matching_items) == 0:
+        print(f"ERROR: matching_items in find_rand_action is empty, encoded_state: {encoded_state}")
     random_index = random.randrange(num_options)
     action = list(matching_items.keys())[random_index][1]
     return action
 
-def find_max_q(q_table, encoded_state):
+def find_max_value(q_table, encoded_state):
     matching_items = {key: value for key, value in q_table.items() if key[0] == encoded_state}
+    if len(matching_items) == 0:
+        print(f"ERROR: matching_items in find_max_value is empty, encoded_state: {encoded_state}")
     max_value = max(matching_items.values())
     return max_value
 
@@ -319,11 +330,12 @@ def run_episode():
         else:
             action = find_max_action(Q, encoded_state)
         action()
-        next_state = get_info()
+        info = get_info()
+        next_state = info['state']
         next_encoded_state = encode_state(next_state)
-        next_max_value = find_max_action(Q, next_encoded_state)
+        next_max_value = find_max_value(Q, next_encoded_state)
         print(f"Random choice: {rnd_choice}, Action chosen: {action}")
-        Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(next_state['immediate_reward'] + gamma * next_max_value)
+        Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(info['immediate_reward'] + gamma * next_max_value)
         state = next_state
         encoded_state = next_encoded_state
         
@@ -335,10 +347,12 @@ def main(q_learn):
         print(f"---- iteration {sample_cntr} ----\n")
         setup_env()
         run_episode()
+        if q_learn:
+            global Q
+            save_q_table(Q)
         bring_down_env()
         sample_cntr += 1
-    if q_learn:
-        save_q_table()
+    terminate()
 
 if __name__ == "__main__":
         args = rospy.myargv()
@@ -352,4 +366,4 @@ if __name__ == "__main__":
         rospy.wait_for_service('/pick')
         rospy.wait_for_service('/place')
         main(bool(eval(args[1])))
-        terminate()
+        
