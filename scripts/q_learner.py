@@ -360,8 +360,9 @@ def run_episode(iteration, q_learn):
         next_max_value = find_max_value(Q, next_encoded_state)
         print(f"DEBUG: BEFORE UPDATE:\n\tQ[{(encoded_state,action.__name__)}] = {Q[(encoded_state,action)]}\n\timmediate_reward: {info['immediate_reward']}")
         print(f"\n\tNext state: {next_encoded_state},\n\tNext max action: {find_max_action(Q,next_encoded_state)}\n\tNext max value: {next_max_value}")
-        Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(info['immediate_reward'] + gamma * next_max_value)
-        print(f"\nDEBUG: AFTER UPDATE:\n\tQ[{(encoded_state,action.__name__)}] = {Q[(encoded_state,action)]}")
+        if q_learn > 0:
+            Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(info['immediate_reward'] + gamma * next_max_value)
+            print(f"\nDEBUG: AFTER UPDATE:\n\tQ[{(encoded_state,action.__name__)}] = {Q[(encoded_state,action)]}")
         prev_info = info
         state = next_state
         encoded_state = next_encoded_state
