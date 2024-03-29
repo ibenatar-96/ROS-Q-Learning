@@ -1,6 +1,6 @@
-Task 4 Submission - Q Learning in ROS
+# Task 4 Submission - Q Learning in ROS
 
-##How to run:
+## How to run:
 1. copy task4_env to ~/catkin\_ws/src
 2. cd ~/catkin\_ws/src/task4\_env/scripts
 3. chmod +x q\_learner.py
