@@ -12,28 +12,36 @@ from itertools import permutations, product
 from task4_env.srv import navigate, info, place, pick
 import csv
 import random
+import math
 
 CSV_FILE = "../q_table.csv"
 MAX_NAV = 8
 MAX_PICK = 6
+NUM_OF_ITERATIONS = 2000
 
 nav_count = 0
 pick_count = 0
 
-last_total_rewards = 0
+prev_info = None
 
 Q = {}
 TERMINATE_STATE = [(0,4,4,4,4),(1,4,4,4,4),(2,4,4,4,4),(3,4,4,4,4),(4,4,4,4,4)]
 
 def handle_csv(q_learn):
-    print(f"Enable Q Learning: {q_learn}")
     global Q
-    if q_learn:
-        Q = create_q_table()
-    if not q_learn:
+    if q_learn == 0:
         Q = load_q_table()
+    elif q_learn == 1:
+        Q = create_q_table()
+    elif q_learn == 2:
+        Q = load_q_table()
+    else:
+        print("ERROR, Q Learn arg can be 0, 1, or 2.")
+        terminate()
+        exit(1)
+    print(f"Enable Q Learning: {q_learn}")
 
-def save_q_table(q_table):
+def save_q_table(q_table, file=None):
     actions = {navigate_to_loc_0:'navigate_to_loc_0', 
         navigate_to_loc_1:'navigate_to_loc_1', 
         navigate_to_loc_2:'navigate_to_loc_2', 
@@ -41,22 +49,27 @@ def save_q_table(q_table):
         navigate_to_loc_4:'navigate_to_loc_4', 
         pick_toy:'pick_toy', 
         place_toy:'place_toy'}
-
+    global CSV_FILE
+    csv_file = CSV_FILE if file is None else file
     _states = set([state for (state, _) in q_table.keys()])
-    _actions = set([actions[action] for (_, action) in q_table.keys()])
-
-    with open(CSV_FILE, 'w', newline='') as csvfile:
+    # _actions = set([actions[action] for (_, action) in q_table.keys()])
+    print(f"Saving Q Table to: {csv_file}")
+    with open(csv_file, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
 
         # Write header row with actions as column names
-        writer.writerow(['State'] + list(_actions))
+        list_actions = list(actions.values())
+        writer.writerow(['State'] + list_actions)
 
         # Write each state as a row with corresponding Q-values for each action
         for _state in _states:
             row = [_state]
-            for action in actions:
-                # Access Q-value from the dictionary, handle missing entries (e.g., 0)
-                q_value = q_table.get((_state, action), 0)
+            for i,action in enumerate(actions.keys()):
+                if actions[action] != list_actions[i]:
+                    print(f"ERROR: \n\tSAVE_Q_TABLE ACTIONS[{action}] not eq. list_actions[{i}]: {actions[action]} != {list_actions[i]}")
+                    terminate()
+                    exit(1)
+                q_value = q_table[_state, action]
                 row.append(q_value)
             writer.writerow(row)
 
@@ -86,9 +99,6 @@ def create_q_table():
 
     permutations_list = []
     for permutation in [element for element in product([0,1,2,3,4,5], repeat=4)]:
-        unique_elements = set(permutation)
-        if len(permutation) != len(unique_elements) and 4 not in (set(permutation) ^ unique_elements):
-            continue
         for first_element in range(5):
             state = tuple([first_element]) + tuple(permutation)
             permutations_list.append(state)
@@ -214,16 +224,16 @@ def pick_toy():
     except rospy.ServiceException as e:
         print("Service call failed: %s"%e)
 
-def get_info():
+def get_info(print_info=True):
     print(f"Getting /info")
     try:
         info_srv = rospy.ServiceProxy('/info', info)
         resp = info_srv()
-        return parse_info(resp.internal_info)
+        return parse_info(resp.internal_info, print_info=print_info)
     except rospy.ServiceException as e:
         print("Service call failed: %s"%e)
 
-def parse_info(info_str):
+def parse_info(info_str, print_info=True):
     info_dict = {}
     lines = info_str.splitlines()  # Split the string by lines
 
@@ -255,25 +265,29 @@ def parse_info(info_str):
             info_dict['state'] = state
 
         if line.startswith("total rewards:"):
-            global last_total_rewards
-            total_r = eval(line[line.find(":")+1:])
-            info_dict['total_rewards'] = total_r
-            info_dict['immediate_reward'] = total_r - last_total_rewards
-            last_total_rewards = total_r
-
+            global prev_info
+            total_rewards = eval(line[line.find(":")+1:])
+            info_dict['total_rewards'] = total_rewards
+            if prev_info is None:
+                info_dict['immediate_reward'] = total_rewards
+            else:
+                info_dict['immediate_reward'] = total_rewards - prev_info['total_rewards']
+            if print_info:
+                print(f"DEBUG: \n\ttotal_rewards = {info_dict['total_rewards']}, immediate_reward = {info_dict['immediate_reward']}")
     return info_dict
 
 def setup_env():
+    global nav_count, pick_count, prev_info
+    prev_info = None
     navigate_to_loc_4()
     navigate_to_loc_4()
-    global nav_count, pick_count
     nav_count = pick_count = 0
+    prev_info = None
 
     subprocess.run('rosnode kill skills_server_node', shell=True)
     time.sleep(2)
     subprocess.Popen('rosrun task4_env skills_server.py', shell=True)
     time.sleep(2)
-    
 
 def bring_down_env():
     subprocess.run('rosnode kill skills_server_node', shell=True)
@@ -315,12 +329,21 @@ def find_max_value(q_table, encoded_state):
     max_value = max(matching_items.values())
     return max_value
 
-def run_episode():
-    global Q, TERMINATE_STATE, nav_count, pick_count
-    epsilon = 0.3
+def get_decaying_epsilon(iteration, num_of_iterations):
+  decay_rate = (1.0 - 0.01) / num_of_iterations
+  clamped_iteration = min(max(iteration, 0), num_of_iterations)
+  epsilon = 1.0 - (decay_rate * clamped_iteration)
+  return epsilon
+
+def run_episode(iteration, q_learn):
+    global Q, TERMINATE_STATE, nav_count, pick_count, prev_info, NUM_OF_ITERATIONS
+    # epsilon = get_decaying_epsilon(iteration, NUM_OF_ITERATIONS)
+    epsilon = max(math.pow(0.998, iteration), 0.05) if q_learn > 0 else 0
     alpha = 0.01
     gamma = 0.95
-    info = get_info()
+    prev_info = None
+    print(f"DEBUG: \n\tepsilon: {epsilon}")
+    info = get_info(print_info=False)
     state = info['state']
     encoded_state = encode_state(state)
     while encoded_state not in TERMINATE_STATE and nav_count < MAX_NAV and pick_count < MAX_PICK:
@@ -329,35 +352,54 @@ def run_episode():
             action = find_rand_action(Q, encoded_state)
         else:
             action = find_max_action(Q, encoded_state)
+        print(f"Random choice: {rnd_choice}, Action chosen: {action}")
         action()
         info = get_info()
         next_state = info['state']
         next_encoded_state = encode_state(next_state)
         next_max_value = find_max_value(Q, next_encoded_state)
-        print(f"Random choice: {rnd_choice}, Action chosen: {action}")
+        print(f"DEBUG: BEFORE UPDATE:\n\tQ[{(encoded_state,action.__name__)}] = {Q[(encoded_state,action)]}\n\timmediate_reward: {info['immediate_reward']}")
+        print(f"\n\tNext state: {next_encoded_state},\n\tNext max action: {find_max_action(Q,next_encoded_state)}\n\tNext max value: {next_max_value}")
         Q[(encoded_state,action)] = (1 - alpha)*Q[(encoded_state,action)] + alpha*(info['immediate_reward'] + gamma * next_max_value)
+        print(f"\nDEBUG: AFTER UPDATE:\n\tQ[{(encoded_state,action.__name__)}] = {Q[(encoded_state,action)]}")
+        prev_info = info
         state = next_state
         encoded_state = next_encoded_state
+        
         
 
 def main(q_learn):
     handle_csv(q_learn)
     sample_cntr = 0
-    while sample_cntr < 1000:
+    average_rewards = 0
+    global NUM_OF_ITERATIONS
+    max_iterations = NUM_OF_ITERATIONS if q_learn > 0 else 10
+    while sample_cntr < max_iterations:
         print(f"---- iteration {sample_cntr} ----\n")
         setup_env()
-        run_episode()
-        if q_learn:
+        print(f"+++++ STARTING EPISODE {sample_cntr} +++++")
+        run_episode(sample_cntr, q_learn)
+        print(f"+++++ FINISHED EPISODE {sample_cntr} +++++")
+        if q_learn  > 0:
             global Q
             save_q_table(Q)
+        else:
+            info = get_info()
+            episode_rewards = info['total_rewards']
+            print(f"Episode {sample_cntr} total rewards: {episode_rewards}")
+            average_rewards += episode_rewards
         bring_down_env()
         sample_cntr += 1
+    if q_learn == 0:
+        average_rewards /= 10
+        print(f"Average rewards for 10 episodes: {average_rewards}")
+    save_q_table(Q, file="../final_q_table.csv")
     terminate()
 
 if __name__ == "__main__":
         args = rospy.myargv()
         if len(args) != 2:
-            print("Please provide 1 arg only for q learning: 1 - True, 0 - False")
+            print("Please provide 1 arg only for q learning: 1 - True, 0 - False, 2 - Cont. learning on existing q_table")
         subprocess.Popen(['roslaunch', 'task4_env', 'task4_env.launch'])
         time.sleep(2)
         rospy.init_node("q_learner")
@@ -365,5 +407,5 @@ if __name__ == "__main__":
         rospy.wait_for_service('/info')
         rospy.wait_for_service('/pick')
         rospy.wait_for_service('/place')
-        main(bool(eval(args[1])))
+        main(eval(args[1]))
         

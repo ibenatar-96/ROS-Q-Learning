@@ -103,7 +103,7 @@ if __name__ == '__main__':
             pick(sys.argv[2])
         if command == "place":
             place(sys.argv[2], int(sys.argv[3]))
-    except:
-        print("there was an error")
+    except Exception as e:
+        print(f"there was an error {e}")
 	
 
